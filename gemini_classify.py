@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import argparse
 import pandas as pd
 from dotenv import load_dotenv
 from google import genai
@@ -8,58 +9,63 @@ from pydantic import BaseModel
 from typing import Literal
 from tqdm import tqdm
 
-SYSTEM_PROMPT = (
+
+SINGLE_SYSTEM_PROMPT = (
     "You are classifying user text. The possible classes are:\n"
     "{}\n"
-    "Please respond in the following JSON format:\n"
+    "Please respond with only valid JSON in the following format:\n"
     "{{\n"
-    "    'reasoning': 'Explain your reasoning for why or why not the text is a match with each class.',\n"
-    "    'classifications': ['List all of the matched classes']\n"
+    "    'reasoning': 'Explain your reasoning for why or why not the text is a match with a class.',\n"
+    "    'classifications': 'The name of the class that best matches the user text',\n"
     "    'confidence': 'Your confidence in the classification on a scale from 0 to 100; 100 being most confident.'\n"
     "}}\n"
-    "The text to classify follows below:\n",
+    "The text to classify follows below:\n"
+    "{}"
+)
+MULTI_SYSTEM_PROMPT = (
+    "You are classifying user text. The possible classes are:\n"
+    "{}\n"
+    "Please respond with only valid JSON in the following format:\n"
+    "{{\n"
+    "    'reasoning': 'Explain your reasoning for why or why not the text is a match with each class.',\n"
+    "    'classifications': ['List all of the matched classes'],\n"
+    "    'confidence': 'Your confidence in the classification on a scale from 0 to 100; 100 being most confident.'\n"
+    "}}\n"
+    "The text to classify follows below:\n"
     "{}"
 )
 
 
-def fetchFilenameFromSys():
-    filename = None
-    if len(sys.argv) > 1:
-        filename = sys.argv[1]
+def createStructuredOutputClass(classes, multi):
+    if multi:
+        class ReasonedClassification(BaseModel):
+            reasoning: str
+            classifications: list[Literal[tuple(classes)]]
+            confidence: int
     else:
-        print("Please provide an input CSV filename.")
-    return filename
+        class ReasonedClassification(BaseModel):
+            reasoning: str
+            classifications: Literal[tuple(classes)]
+            confidence: int
+    return ReasonedClassification
 
 
-def fetchColumnIndexFromSys():
-    columnIndex = None
-    if len(sys.argv) > 2:
-        columnIndex = sys.argv[2]
+def createFormattedPromptContents(value, classes, multi):
+    if multi:
+        formattedPromptContents = MULTI_SYSTEM_PROMPT.format(
+            "\n".join(["- " + class_name for class_name in classes]),
+            value
+        )
     else:
-        print("Please provide a column index.")
-    return columnIndex
+        formattedPromptContents = SINGLE_SYSTEM_PROMPT.format(
+            "\n".join(["- " + class_name for class_name in classes]),
+            value
+        )
+    return formattedPromptContents
 
 
-def fetchClassesFromSys():
-    classes = []
-    if len(sys.argv) > 3:
-        classes = sys.argv[3:]
-    else:
-        print("Please provide classes following the filename.")
-
-
-def createStructuredOutputClass(classes):
-    class ReasonedClassification(BaseModel):
-        reasoning: str
-        classifications: list[Literal[tuple(classes)]]
-        confidence: int
-
-
-def geminiClassify(client, value, classes, structuredOutputClass):
-    formattedPromptContents = SYSTEM_PROMPT.format(
-        "\n".join(["- " + class_name for class_name in classes]),
-        value
-    )
+def geminiClassify(client, value, classes, multi, structuredOutputClass):
+    formattedPromptContents = createFormattedPromptContents(value, classes, multi)
     response = client.models.generate_content(
         model='gemini-2.0-flash',
         contents=formattedPromptContents,
@@ -79,30 +85,43 @@ def main():
         print("Please provide a GEMINI_API_KEY in a .env file.")
         return
     client = genai.Client(api_key=GEMINI_API_KEY)
-    filename = fetchFilenameFromSys()
-    if filename is None:
-        return
-    columnIndex = fetchColumnIndexFromSys()
-    if columnIndex is None:
-        return
-    classes = fetchClassesFromSys()
-    if len(classes) == 0:
-        return
+    
+    parser = argparse.ArgumentParser(
+                    prog='Gemini classifier',
+                    description='General purpose classifier utilizing the Gemini API')
+    parser.add_argument('-f', '--filename', required=True)
+    parser.add_argument('-i', '--index', type=int, default=1)
+    parser.add_argument('-c','--classes', nargs='+', help='<Required> Set classes', required=True)
+    parser.add_argument('-m', '--multi', action='store_true')
+    parser.add_argument('-o', '--outfilename')
+    args = parser.parse_args()
 
-    structuredOutputClass = createStructuredOutputClass(classes)
-    data = pd.read_csv(filename)
-    column = data[columnIndex]
-    import pdb; pdb.set_trace()
+    structuredOutputClass = createStructuredOutputClass(args.classes, args.multi)
+    data = pd.read_csv(args.filename)
+    colnames = data.columns
+    columnName = colnames[args.index - 1]
+    column = data[[columnName]]
+    column_values = [val[0] for val in column.values.tolist()]
     reasonings = []
     classifications = []
-    for value in tqdm(column):
-        geminiResponse = geminiClassify(value)
+    confidences = []
+    for value in tqdm(column_values):
+        geminiResponse = geminiClassify(client, value, args.classes, args.multi, structuredOutputClass)
         reasonings.append(geminiResponse['reasoning'])
-        classifications.append(', '.join(geminiResponse['classifications']))
+        if args.multi:
+            classifications.append(', '.join(geminiResponse['classifications']))
+        else:
+            classifications.append(geminiResponse['classifications'])
+        confidences.append(geminiResponse['confidence'])
     data['gemini_reasonings'] = reasonings
     data['gemini_classifications'] = classifications
-    fileSplitEx, _ = os.path.splitext(filename)
-    data.to_csv(fileSplitEx + "_gemini_classified.csv")
+    data['gemini_confidence'] = confidences
+    if not args.outfilename:
+        fileSplitEx, _ = os.path.splitext(filename)
+        outfilename = fileSplitEx + "_gemini_classified.csv"
+    else:
+        outfilename = args.outfilename
+    data.to_csv(outfilename, index=False)
         
 
 if __name__ == '__main__':
