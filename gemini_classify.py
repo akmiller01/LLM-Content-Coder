@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from google import genai
 from pydantic import BaseModel
 from typing import Literal
+from tqdm import tqdm
 
 SYSTEM_PROMPT = (
     "You are classifying user text. The possible classes are:\n"
@@ -23,7 +24,7 @@ SYSTEM_PROMPT = (
 
 def fetchFilenameFromSys():
     filename = None
-    if length(sys.argv) > 1:
+    if len(sys.argv) > 1:
         filename = sys.argv[1]
     else:
         print("Please provide an input CSV filename.")
@@ -32,7 +33,7 @@ def fetchFilenameFromSys():
 
 def fetchColumnIndexFromSys():
     columnIndex = None
-    if length(sys.argv) > 2:
+    if len(sys.argv) > 2:
         columnIndex = sys.argv[2]
     else:
         print("Please provide a column index.")
@@ -41,7 +42,7 @@ def fetchColumnIndexFromSys():
 
 def fetchClassesFromSys():
     classes = []
-    if length(sys.argv) > 3:
+    if len(sys.argv) > 3:
         classes = sys.argv[3:]
     else:
         print("Please provide classes following the filename.")
@@ -91,9 +92,10 @@ def main():
     structuredOutputClass = createStructuredOutputClass(classes)
     data = pd.read_csv(filename)
     column = data[columnIndex]
+    import pdb; pdb.set_trace()
     reasonings = []
     classifications = []
-    for value in column:
+    for value in tqdm(column):
         geminiResponse = geminiClassify(value)
         reasonings.append(geminiResponse['reasoning'])
         classifications.append(', '.join(geminiResponse['classifications']))
