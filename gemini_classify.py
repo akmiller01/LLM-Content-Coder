@@ -8,6 +8,7 @@ from google import genai
 from pydantic import BaseModel
 from typing import Literal
 from tqdm import tqdm
+import time
 
 
 SINGLE_SYSTEM_PROMPT = (
@@ -66,16 +67,39 @@ def createFormattedPromptContents(value, classes, multi):
 
 def geminiClassify(client, value, classes, multi, structuredOutputClass):
     formattedPromptContents = createFormattedPromptContents(value, classes, multi)
-    response = client.models.generate_content(
-        model='gemini-2.0-flash',
-        contents=formattedPromptContents,
-        config={
-            'response_mime_type': 'application/json',
-            'response_schema': structuredOutputClass,
-        },
-    )
-    json_response = json.loads(response.text)
-    return json_response
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=formattedPromptContents,
+                config={
+                    'response_mime_type': 'application/json',
+                    'response_schema': structuredOutputClass,
+                },
+            )
+            json_response = json.loads(response.text)
+            return json_response
+        except google.genai.errors.ServerError as e:
+            print(f"Connection error: {e}")
+            if attempt < max_retries - 1:
+                sleep_duration = (2 ** attempt) * 1
+                print(f"Retrying in {sleep_duration} seconds...")
+                time.sleep(sleep_duration)
+            else:
+                print("Max retries reached.  Returning None.")
+                return None
+        except json.JSONDecodeError as e:
+            print(f"JSON decode error: {e}")
+            print(f"Response text: {response.text}")
+            if attempt < max_retries - 1:
+                sleep_duration = (2 ** attempt) * 1
+                print(f"Retrying in {sleep_duration} seconds...")
+                time.sleep(sleep_duration)
+            else:
+                print("Max retries reached.  Returning None.")
+                return None
+    return None
 
 
 def main():
@@ -107,12 +131,17 @@ def main():
     confidences = []
     for value in tqdm(column_values):
         geminiResponse = geminiClassify(client, value, args.classes, args.multi, structuredOutputClass)
-        reasonings.append(geminiResponse['reasoning'])
-        if args.multi:
-            classifications.append(', '.join(geminiResponse['classifications']))
+        if geminiResponse is not None:
+            reasonings.append(geminiResponse['reasoning'])
+            if args.multi:
+                classifications.append(', '.join(geminiResponse['classifications']))
+            else:
+                classifications.append(geminiResponse['classifications'])
+            confidences.append(geminiResponse['confidence'])
         else:
-            classifications.append(geminiResponse['classifications'])
-        confidences.append(geminiResponse['confidence'])
+            reasonings.append("")
+            classifications.append("")
+            confidences.append("")
     data['gemini_reasonings'] = reasonings
     data['gemini_classifications'] = classifications
     data['gemini_confidence'] = confidences
