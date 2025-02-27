@@ -6,6 +6,9 @@ import pandas as pd
 from dotenv import load_dotenv
 from google import genai
 from openai import OpenAI, OpenAIError
+import ollama
+from ollama import chat
+from ollama import ChatResponse
 from pydantic import BaseModel
 from typing import Literal
 from tqdm import tqdm
@@ -92,8 +95,8 @@ def createFormattedPromptContents(value, classes, model, multi):
     return formattedPromptContents
 
 
-def geminiClassify(client, value, classes, multi, structuredOutputClass):
-    formattedPromptContents = createFormattedPromptContents(value, classes, 'gemini', multi)
+def geminiClassify(client, model, value, classes, multi, structuredOutputClass):
+    formattedPromptContents = createFormattedPromptContents(value, classes, model, multi)
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -129,8 +132,8 @@ def geminiClassify(client, value, classes, multi, structuredOutputClass):
     return None
 
 
-def gptClassify(client, value, classes, multi, structuredOutputClass):
-    formattedPromptContents = createFormattedPromptContents(value, classes, 'gpt', multi)
+def gptClassify(client, model, value, classes, multi, structuredOutputClass):
+    formattedPromptContents = createFormattedPromptContents(value, classes, model, multi)
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -163,6 +166,17 @@ def gptClassify(client, value, classes, multi, structuredOutputClass):
     return None
 
 
+def ollamaClassify(client, model, value, classes, multi, structuredOutputClass):
+    formattedPromptContents = createFormattedPromptContents(value, classes, model, multi)
+    response: ChatResponse = client(
+        model=model,
+        format=structuredOutputClass.model_json_schema(),
+        messages=formattedPromptContents
+    )
+    parsed_response_content = json.loads(response.message.content)
+    return parsed_response_content
+
+
 def main():
     parser = argparse.ArgumentParser(
                     prog='Gemini classifier',
@@ -190,6 +204,11 @@ def main():
             return
         client = OpenAI(api_key = OPENAI_API_KEY)
         classifyFunction = gptClassify
+    else: # Assume all other models are served via ollama
+        print(f"Pulling model: {args.model}")
+        ollama.pull(args.model)
+        client = chat
+        classifyFunction = ollamaClassify
 
 
     structuredOutputClass = createStructuredOutputClass(args.classes, args.multi)
@@ -202,7 +221,7 @@ def main():
     classifications = []
     confidences = []
     for value in tqdm(column_values):
-        modelResponse = classifyFunction(client, value, args.classes, args.multi, structuredOutputClass)
+        modelResponse = classifyFunction(client, args.model, value, args.classes, args.multi, structuredOutputClass)
         if modelResponse is not None:
             reasonings.append(modelResponse['reasoning'])
             if args.multi:
