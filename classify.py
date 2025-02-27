@@ -143,7 +143,7 @@ def gptClassify(client, model, value, classes, multi, structuredOutputClass):
                 response_format=structuredOutputClass
             )
             json_response = completion.choices[0].message.parsed
-            return json_response
+            return json_response.model_dump()
         except OpenAIError as e:
             print(f"Connection error: {e}")
             if attempt < max_retries - 1:
