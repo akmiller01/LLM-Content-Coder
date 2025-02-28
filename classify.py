@@ -1,3 +1,7 @@
+# Remote server Ollama install
+# curl -fsSL https://ollama.com/install.sh | sh
+# pip install ollama python-dotenv pydantic pandas google-genai openai
+
 import os
 import sys
 import json
